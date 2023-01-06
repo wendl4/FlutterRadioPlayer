@@ -21,7 +21,7 @@ import android.support.v4.media.session.MediaSessionCompat
 import androidx.annotation.Nullable
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.google.android.exoplayer2.C
-import com.google.android.exoplayer2.ExoPlaybackException
+import com.google.android.exoplayer2.PlaybackException
 import com.google.android.exoplayer2.Player
 import com.google.android.exoplayer2.SimpleExoPlayer
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
@@ -31,6 +31,8 @@ import com.google.android.exoplayer2.source.hls.HlsMediaSource
 import com.google.android.exoplayer2.ui.PlayerNotificationManager
 import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
 import com.google.android.exoplayer2.util.Util
+import com.google.android.exoplayer2.MediaMetadata
+import com.google.android.exoplayer2.MediaItem
 import me.sithiramunasinghe.flutter.flutter_radio_player.FlutterRadioPlayerPlugin.Companion.broadcastActionName
 import me.sithiramunasinghe.flutter.flutter_radio_player.FlutterRadioPlayerPlugin.Companion.broadcastChangedMetaDataName
 import me.sithiramunasinghe.flutter.flutter_radio_player.R
@@ -165,7 +167,10 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
             return START_NOT_STICKY
         }
 
-        player = SimpleExoPlayer.Builder(context).build()
+        player = SimpleExoPlayer.Builder(context)
+        .setSeekForwardIncrementMs(0)
+        .setSeekBackIncrementMs(0)
+        .build()
 
 
         // Gain Audio Focus
@@ -195,7 +200,7 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
 
         val audioSource: MediaSource = buildMediaSource(dataSourceFactory, streamUrl!!)
 
-        val playerEvents = object : Player.EventListener {
+        val playerEvents = object : Player.Listener {
 
             override fun onPlayerStateChanged(playWhenReady: Boolean, playbackState: Int) {
                 playbackStatus = when (playbackState) {
@@ -224,10 +229,17 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
             }
 
 
-            override fun onPlayerError(error: ExoPlaybackException) {
+            override fun onPlayerError(error: PlaybackException) {
                 pushEvent(FLUTTER_RADIO_PLAYER_ERROR)
                 playbackStatus = PlaybackStatus.ERROR
                 error.printStackTrace()
+            }
+
+            // register our meta data listener
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                currentMetadata = mediaMetadata.toString()
+                localBroadcastManager.sendBroadcast(broadcastMetaDataIntent.putExtra("meta_data", currentMetadata))
+                playerNotificationManager?.invalidate()
             }
         }
 
@@ -238,20 +250,16 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
             it.prepare(audioSource)
         }
 
-        // register our meta data listener
-        player?.addMetadataOutput {
-            currentMetadata = it.get(0).toString()
-            localBroadcastManager.sendBroadcast(broadcastMetaDataIntent.putExtra("meta_data", currentMetadata))
-            playerNotificationManager?.invalidate()
-        }
 
-        playerNotificationManager = PlayerNotificationManager.createWithNotificationChannel(
-                context,
-                playbackChannelId,
-                R.string.channel_name,
-                R.string.channel_description,
-                playbackNotificationId,
-                object : PlayerNotificationManager.MediaDescriptionAdapter {
+        playerNotificationManager = PlayerNotificationManager.Builder(
+            context,
+            playbackNotificationId,
+            playbackChannelId
+        )
+        .setChannelNameResourceId(R.string.channel_name)
+        .setChannelDescriptionResourceId(R.string.channel_description)
+        .setMediaDescriptionAdapter(
+            object : PlayerNotificationManager.MediaDescriptionAdapter {
 
                     override fun getCurrentContentTitle(player: Player): String {
                         return appName
@@ -276,8 +284,10 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
                         return null // OS will use the application icon.
                     }
 
-                },
-                object : PlayerNotificationManager.NotificationListener {
+                }
+        )
+        .setNotificationListener(
+            object : PlayerNotificationManager.NotificationListener {
                     override fun onNotificationCancelled(notificationId: Int, dismissedByUser: Boolean) {
                         logger.info("Notification Cancelled. Stopping player...")
                         stop()
@@ -290,6 +300,7 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
 
                 }
         )
+        .build()
 
         logger.info("Building Media Session and Player Notification.")
 
@@ -310,11 +321,15 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
         }
 
         playerNotificationManager!!.setUseStopAction(true)
-        playerNotificationManager!!.setFastForwardIncrementMs(0)
-        playerNotificationManager!!.setRewindIncrementMs(0)
+        //playerNotificationManager!!.setFastForwardIncrementMs(0)
+        //playerNotificationManager!!.setRewindIncrementMs(0)
         playerNotificationManager!!.setUsePlayPauseActions(true)
-        playerNotificationManager!!.setUseNavigationActions(false)
-        playerNotificationManager!!.setUseNavigationActionsInCompactView(false)
+        //playerNotificationManager!!.setUseNavigationActions(false)
+        //playerNotificationManager!!.setUseNavigationActionsInCompactView(false)
+        playerNotificationManager!!.setUseNextAction(false)
+        playerNotificationManager!!.setUsePreviousAction(false)
+        playerNotificationManager!!.setUseNextActionInCompactView(false)
+        playerNotificationManager!!.setUsePreviousActionInCompactView(false)
 
         playerNotificationManager!!.setPlayer(player)
         playerNotificationManager!!.setMediaSessionToken(mediaSession.sessionToken)
@@ -383,8 +398,8 @@ class StreamingCore : Service(), AudioManager.OnAudioFocusChangeListener {
         val uri = Uri.parse(streamUrl)
 
         return when (val type = Util.inferContentType(uri)) {
-            C.TYPE_HLS -> HlsMediaSource.Factory(dataSourceFactory).createMediaSource(uri)
-            C.TYPE_OTHER -> ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(uri)
+            C.TYPE_HLS -> HlsMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(uri))
+            C.TYPE_OTHER -> ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(MediaItem.fromUri(uri))
             else -> {
                 throw IllegalStateException("Unsupported type: $type")
             }
